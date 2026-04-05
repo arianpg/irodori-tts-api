@@ -1,0 +1,15 @@
+# Environment / secrets
+.env
+
+# Reference audio files (may contain personal voice data)
+voices/
+
+# Test outputs (generated audio)
+test_outputs/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Docker
+*.log

@@ -1,0 +1,24 @@
+services:
+  irodori-tts-api:
+    build: .
+    container_name: irodori-tts-api
+    ports:
+      - "8880:8880"
+    volumes:
+      # HuggingFace cache (avoids re-downloading on restart)
+      - hf_cache:/root/.cache/huggingface
+      # Reference audio files for speaker cloning (irodori-tts-500m-v2)
+      - ./voices:/voices
+    env_file:
+      - .env
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  hf_cache:
