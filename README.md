@@ -12,6 +12,8 @@
 モデルはリクエストで指定されたものを動的にロードし、一定時間（デフォルト300秒）再リクエストがなければ自動でアンロードします。
 Dockerでの利用を想定しています。
 
+Docker Hub: [arianpg/irodori-tts-api](https://hub.docker.com/r/arianpg/irodori-tts-api)
+
 ## 動作要件
 
 - **GPU**: NVIDIA GPU（CUDA 対応）
