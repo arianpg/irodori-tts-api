@@ -72,8 +72,8 @@ curl http://localhost:8880/v1/audio/voice_contents \
 
 本APIが利用を想定しているIrodori-TTS各モデルには、MITライセンスに加えて **倫理的制限（Ethical Restrictions）** が定められています。本APIを利用する際はモデルの利用規約を確認し、これに従ってください。
 
-- [Irodori-TTS-500M-v2-VoiceDesign — Ethical Restrictions](https://huggingface.co/Aratako/Irodori-TTS-500M-v2-VoiceDesign)
-- [Irodori-TTS-500M-v2 — Ethical Restrictions](https://huggingface.co/Aratako/Irodori-TTS-500M-v2)
+- [Irodori-TTS-500M-v2-VoiceDesign — Ethical Restrictions](https://huggingface.co/Aratako/Irodori-TTS-500M-v2-VoiceDesign#ethical-restrictions)
+- [Irodori-TTS-500M-v2 — Ethical Restrictions](https://huggingface.co/Aratako/Irodori-TTS-500M-v2-VoiceDesign#ethical-restrictions)
 
 ---
 
