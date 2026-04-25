@@ -37,15 +37,22 @@ cp .env.example .env
 
 `.env` を編集し、必要に応じて設定値を変更します。
 
-### 3. ビルド・起動
+### 3. 起動
 
 ```bash
-docker compose up --build
+docker compose up
 ```
+
+Docker Hub からイメージを自動でpullして起動します。
 
 初回起動時にモデルが自動でダウンロードされます（数 GB）。以降はキャッシュが利用されます。
 
 モデルのロードはリクエスト時に行われます。起動直後の最初のリクエストは完了まで数分かかる場合があります。
+
+> **ローカルビルドする場合:**
+> ```bash
+> docker compose -f compose.yml -f compose.dev.yml up --build
+> ```
 
 ### 4. リファレンス音声の準備（`irodori-tts-500m-v2` を使用する場合）
 
