@@ -1,6 +1,6 @@
 services:
   irodori-tts-api:
-    image: arianpg/irodori-tts-api:latest
+    build: .
     container_name: irodori-tts-api
     ports:
       - "8880:8880"
