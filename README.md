@@ -157,6 +157,16 @@ curl http://localhost:8880/v1/audio/voice_contents \
 > これ😠、昨日からずっと机の上に置きっぱなしになってますよ😒
 > ```
 
+**ストリーミング（Chunked Transfer Encoding）**
+
+入力テキストを句読点（。！？）で文単位に分割し、文ごとに生成・送信します。クライアントは最初の文が生成され次第、再生を開始できます。
+
+| フォーマット | ストリーミング方式 |
+|---|---|
+| `mp3` / `aac` | チャンク単位でストリーミング（各文を都度送信） |
+| `wav` | ストリーミングWAVヘッダー + チャンクごとに raw PCM 送信 |
+| `opus` / `flac` | バッファリング（コンテナ仕様の都合により全文生成後に送信） |
+
 **curl 利用例**
 
 ```bash
@@ -379,7 +389,7 @@ curl -X DELETE http://localhost:8880/v1/audio/voice_contents/my_voice
 | `CFG_SCALE_TEXT` | `3.0` | テキスト誘導スケール（両モデル共通） |
 | `CFG_SCALE_CAPTION` | `4.0` | キャプション誘導スケール（`irodori-tts-500m-v2-voicedesign` のみ有効） |
 | `CFG_SCALE_SPEAKER` | `5.0` | スピーカー誘導スケール（`irodori-tts-500m-v2` のみ有効） |
-| `FIXED_SECONDS` | `30.0` | 生成する音声の固定長（秒） |
+| `SECONDS_BUFFER_MULTIPLIER` | `1.5` | 文字数から推定した生成秒数に掛けるバッファ倍率。値を大きくすると音声が途切れにくくなるが推論が遅くなる |
 
 #### モデルキャッシュ
 

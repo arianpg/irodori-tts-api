@@ -7,6 +7,7 @@
 #   ./test.sh base                    # ベースモデル（話者クローン）のみ
 #   ./test.sh voice_contents          # voice_contents CRUD のみ
 #   ./test.sh models                  # /v1/models のみ
+#   ./test.sh streaming               # ストリーミングのみ
 #
 # 前提:
 #   - サーバーが http://localhost:8880 で起動していること
@@ -398,6 +399,143 @@ test_base() {
 }
 
 # ---------------------------------------------------------------------------
+# テスト: POST /v1/audio/speech — ストリーミング (Chunked Transfer Encoding)
+#
+# 出力ファイル構成 (test_outputs/streaming/):
+#   vd_mp3_multi.mp3        — voicedesign 複数文、mp3（チャンクストリーミング）
+#   vd_wav_multi.wav        — voicedesign 複数文、wav（WAVヘッダー + raw PCM）
+#   vd_opus_multi.ogg       — voicedesign 複数文、opus（バッファリング）
+#   vd_mp3_single.mp3       — voicedesign 単文（文分割なし）
+#   ref_voice.mp3           — 事前生成したリファレンス音声（baseモデル用）
+#   base_mp3_multi.mp3      — base 複数文、mp3（チャンクストリーミング）
+#   base_wav_multi.wav      — base 複数文、wav（WAVヘッダー + raw PCM）
+# ---------------------------------------------------------------------------
+test_streaming() {
+  section "POST /v1/audio/speech (Streaming)"
+
+  local stream_dir="${OUTPUT_DIR}/streaming"
+  mkdir -p "$stream_dir"
+
+  local TEXT_MULTI="こんにちは。今日もいい天気ですね。どうぞよろしくお願いします。本日はお越しいただきありがとうございます。またいつでもお気軽にご連絡ください。"
+  local TEXT_SINGLE="こんにちは。"
+
+  local status headers out
+
+  # --- voicedesign: mp3 チャンクストリーミング ---
+  out="${stream_dir}/vd_mp3_multi.mp3"
+  headers="/tmp/t_stream_mp3_headers.txt"
+  status=$(curl -s --no-buffer -D "$headers" -o "$out" -w "%{http_code}" \
+    -X POST "${BASE_URL}/v1/audio/speech" \
+    -H "Content-Type: application/json" \
+    --max-time 600 \
+    -d "{\"model\":\"irodori-tts-500m-v2-voicedesign\",\"input\":\"${TEXT_MULTI}\",\"voice\":\"alloy\"}")
+  check_status 200 "$status" "streaming: voicedesign mp3 複数文"
+  check_audio_file "$out" "streaming: voicedesign mp3 ファイル生成"
+  if grep -qi "transfer-encoding: chunked" "$headers"; then
+    pass "streaming: voicedesign mp3 Transfer-Encoding: chunked"
+  else
+    fail "streaming: voicedesign mp3 Transfer-Encoding: chunked が見つからない"
+  fi
+
+  # --- voicedesign: wav WAVヘッダー + raw PCM ストリーミング ---
+  out="${stream_dir}/vd_wav_multi.wav"
+  headers="/tmp/t_stream_wav_headers.txt"
+  status=$(curl -s --no-buffer -D "$headers" -o "$out" -w "%{http_code}" \
+    -X POST "${BASE_URL}/v1/audio/speech" \
+    -H "Content-Type: application/json" \
+    --max-time 600 \
+    -d "{\"model\":\"irodori-tts-500m-v2-voicedesign\",\"input\":\"${TEXT_MULTI}\",\"voice\":\"alloy\",\"response_format\":\"wav\"}")
+  check_status 200 "$status" "streaming: voicedesign wav 複数文"
+  check_audio_file "$out" "streaming: voicedesign wav ファイル生成"
+  if grep -qi "transfer-encoding: chunked" "$headers"; then
+    pass "streaming: voicedesign wav Transfer-Encoding: chunked"
+  else
+    fail "streaming: voicedesign wav Transfer-Encoding: chunked が見つからない"
+  fi
+
+  # --- voicedesign: opus バッファリング（コンテナ仕様の都合）---
+  out="${stream_dir}/vd_opus_multi.ogg"
+  status=$(curl -s -o "$out" -w "%{http_code}" \
+    -X POST "${BASE_URL}/v1/audio/speech" \
+    -H "Content-Type: application/json" \
+    --max-time 600 \
+    -d "{\"model\":\"irodori-tts-500m-v2-voicedesign\",\"input\":\"${TEXT_MULTI}\",\"voice\":\"alloy\",\"response_format\":\"opus\"}")
+  check_status 200 "$status" "streaming: voicedesign opus 複数文（バッファリング）"
+  check_audio_file "$out" "streaming: voicedesign opus ファイル生成"
+
+  # --- voicedesign: mp3 単文（文分割なし・1チャンクのみ）---
+  out="${stream_dir}/vd_mp3_single.mp3"
+  status=$(curl -s -o "$out" -w "%{http_code}" \
+    -X POST "${BASE_URL}/v1/audio/speech" \
+    -H "Content-Type: application/json" \
+    --max-time 600 \
+    -d "{\"model\":\"irodori-tts-500m-v2-voicedesign\",\"input\":\"${TEXT_SINGLE}\",\"voice\":\"alloy\"}")
+  check_status 200 "$status" "streaming: voicedesign mp3 単文"
+  check_audio_file "$out" "streaming: voicedesign mp3 単文 ファイル生成"
+
+  # --- base モデル用リファレンス音声を事前生成 ---
+  local ref_audio="${stream_dir}/ref_voice.mp3"
+  echo -e "\n  [INFO] baseモデル用リファレンス音声を生成中..."
+  local ref_status
+  ref_status=$(curl -s -o "$ref_audio" -w "%{http_code}" \
+    -X POST "${BASE_URL}/v1/audio/speech" \
+    -H "Content-Type: application/json" \
+    --max-time 600 \
+    -d '{"model":"irodori-tts-500m-v2-voicedesign","input":"こんにちは。本日はよろしくお願いします。少しお時間をいただいてもよろしいでしょうか。","voice":"alloy","instructions":"落ち着いた若い女性が、丁寧な口調でゆっくりと話している。"}')
+  if [[ "$ref_status" != "200" ]] || [[ ! -s "$ref_audio" ]]; then
+    fail "streaming: リファレンス音声の生成に失敗 (HTTP ${ref_status}) — base モデルのストリーミングテストをスキップ"
+    echo "  → 出力: ${stream_dir}/"
+    return
+  fi
+  pass "streaming: リファレンス音声を生成"
+
+  # リファレンス音声をアップロード
+  local ref_voice_id="stream_ref_$$"
+  status=$(curl -s -o /tmp/t_stream_ref_upload.json -w "%{http_code}" \
+    -X POST "${BASE_URL}/v1/audio/voice_contents" \
+    -F "file=@${ref_audio}" \
+    -F "voice_id=${ref_voice_id}")
+  check_status 201 "$status" "streaming: リファレンス音声アップロード"
+
+  # --- base: mp3 チャンクストリーミング ---
+  out="${stream_dir}/base_mp3_multi.mp3"
+  headers="/tmp/t_stream_base_mp3_headers.txt"
+  status=$(curl -s --no-buffer -D "$headers" -o "$out" -w "%{http_code}" \
+    -X POST "${BASE_URL}/v1/audio/speech" \
+    -H "Content-Type: application/json" \
+    --max-time 600 \
+    -d "{\"model\":\"irodori-tts-500m-v2\",\"input\":\"${TEXT_MULTI}\",\"voice\":\"${ref_voice_id}\"}")
+  check_status 200 "$status" "streaming: base mp3 複数文"
+  check_audio_file "$out" "streaming: base mp3 ファイル生成"
+  if grep -qi "transfer-encoding: chunked" "$headers"; then
+    pass "streaming: base mp3 Transfer-Encoding: chunked"
+  else
+    fail "streaming: base mp3 Transfer-Encoding: chunked が見つからない"
+  fi
+
+  # --- base: wav WAVヘッダー + raw PCM ストリーミング ---
+  out="${stream_dir}/base_wav_multi.wav"
+  headers="/tmp/t_stream_base_wav_headers.txt"
+  status=$(curl -s --no-buffer -D "$headers" -o "$out" -w "%{http_code}" \
+    -X POST "${BASE_URL}/v1/audio/speech" \
+    -H "Content-Type: application/json" \
+    --max-time 600 \
+    -d "{\"model\":\"irodori-tts-500m-v2\",\"input\":\"${TEXT_MULTI}\",\"voice\":\"${ref_voice_id}\",\"response_format\":\"wav\"}")
+  check_status 200 "$status" "streaming: base wav 複数文"
+  check_audio_file "$out" "streaming: base wav ファイル生成"
+  if grep -qi "transfer-encoding: chunked" "$headers"; then
+    pass "streaming: base wav Transfer-Encoding: chunked"
+  else
+    fail "streaming: base wav Transfer-Encoding: chunked が見つからない"
+  fi
+
+  # クリーンアップ
+  curl -s -o /dev/null -X DELETE "${BASE_URL}/v1/audio/voice_contents/${ref_voice_id}"
+
+  echo "  → 出力: ${stream_dir}/"
+}
+
+# ---------------------------------------------------------------------------
 # メイン
 # ---------------------------------------------------------------------------
 TARGET="${1:-all}"
@@ -407,9 +545,10 @@ case "$TARGET" in
   voicedesign)   test_models; test_voicedesign ;;
   base)          test_models; test_base ;;
   voice_contents) test_voice_contents ;;
-  all)           test_models; test_voicedesign; test_voice_contents; test_base ;;
+  streaming)     test_streaming ;;
+  all)           test_models; test_voicedesign; test_voice_contents; test_base; test_streaming ;;
   *)
-    echo "Usage: $0 [all|models|voicedesign|base|voice_contents]"
+    echo "Usage: $0 [all|models|voicedesign|base|voice_contents|streaming]"
     exit 1
     ;;
 esac

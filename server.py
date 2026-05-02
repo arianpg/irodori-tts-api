@@ -5,6 +5,7 @@ import asyncio
 import io
 import os
 import re
+import struct
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -40,9 +41,9 @@ NUM_STEPS = int(os.environ.get("NUM_STEPS", "40"))
 CFG_SCALE_TEXT = float(os.environ.get("CFG_SCALE_TEXT", "3.0"))
 CFG_SCALE_CAPTION = float(os.environ.get("CFG_SCALE_CAPTION", "4.0"))
 CFG_SCALE_SPEAKER = float(os.environ.get("CFG_SCALE_SPEAKER", "5.0"))
-FIXED_SECONDS = float(os.environ.get("FIXED_SECONDS", "30.0"))
 MODEL_TTL = float(os.environ.get("MODEL_TTL", "300"))
 MODEL_LOAD_TIMEOUT = float(os.environ.get("MODEL_LOAD_TIMEOUT", "300"))
+SECONDS_BUFFER_MULTIPLIER = float(os.environ.get("SECONDS_BUFFER_MULTIPLIER", "1.5"))
 VOICES_DIR = Path(os.environ.get("VOICES_DIR", "/voices"))
 
 CODEC_REPO = "Aratako/Semantic-DACVAE-Japanese-32dim"
@@ -202,6 +203,44 @@ def _encode_audio(audio: torch.Tensor, sample_rate: int, fmt: str, speed: float)
 
 
 # ---------------------------------------------------------------------------
+# Sentence splitting / seconds estimation
+# ---------------------------------------------------------------------------
+def _estimate_seconds(text: str) -> float:
+    return max(3.0, (len(text) / 5.0) * SECONDS_BUFFER_MULTIPLIER)
+
+
+def _split_sentences(text: str) -> list[str]:
+    parts = re.split(r'(?<=[。！？\n])', text)
+    result = [s.strip() for s in parts if s.strip()]
+    return result if result else [text]
+
+
+# ---------------------------------------------------------------------------
+# WAV streaming helpers
+# ---------------------------------------------------------------------------
+def _wav_stream_header(sample_rate: int) -> bytes:
+    # 0xFFFFFFFF in both size fields is the standard convention for streaming WAV
+    return struct.pack(
+        '<4sI4s4sIHHIIHH4sI',
+        b'RIFF', 0xFFFFFFFF, b'WAVE',
+        b'fmt ', 16, 1, 1, sample_rate,
+        sample_rate * 2, 2, 16,
+        b'data', 0xFFFFFFFF,
+    )
+
+
+def _audio_to_pcm(audio: torch.Tensor, speed: float) -> bytes:
+    if audio.dim() == 1:
+        audio = audio.unsqueeze(0)
+    if abs(speed - 1.0) > 1e-3:
+        orig_len = audio.shape[-1]
+        new_len = max(1, round(orig_len / speed))
+        audio = torchaudio.functional.resample(audio, orig_len, new_len)
+    audio_np = audio.cpu().float().squeeze(0).numpy()
+    return (audio_np * 32767).clip(-32768, 32767).astype(np.int16).tobytes()
+
+
+# ---------------------------------------------------------------------------
 # Voice file helpers
 # ---------------------------------------------------------------------------
 def _find_voice_file(voice_id: str) -> Path | None:
@@ -324,14 +363,15 @@ async def create_speech(req: SpeechRequest):
     except Exception as exc:
         return _error(500, f"Model load failed: {exc}")
 
-    # --- Inference (in thread pool to keep event loop responsive) ---
-    try:
+    sentences = _split_sentences(text)
+
+    async def _synthesize(sentence: str):
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
+        return await loop.run_in_executor(
             None,
             lambda: runtime.synthesize(
                 SamplingRequest(
-                    text=text,
+                    text=sentence,
                     caption=caption,
                     ref_wav=ref_wav,
                     ref_latent=None,
@@ -340,7 +380,7 @@ async def create_speech(req: SpeechRequest):
                     ref_ensure_max=True,
                     num_candidates=1,
                     decode_mode="sequential",
-                    seconds=FIXED_SECONDS,
+                    seconds=_estimate_seconds(sentence),
                     max_ref_seconds=30.0,
                     num_steps=NUM_STEPS,
                     cfg_guidance_mode="independent",
@@ -355,16 +395,57 @@ async def create_speech(req: SpeechRequest):
                 log_fn=lambda msg: print(msg, flush=True),
             ),
         )
-    except Exception as exc:
-        return _error(500, str(exc))
 
-    # --- Encode and return ---
-    try:
-        audio_bytes = _encode_audio(result.audios[0], result.sample_rate, fmt, req.speed)
-    except Exception as exc:
-        return _error(500, f"Audio encoding failed: {exc}")
+    # mp3/aac: each encoded chunk is independently valid → stream directly
+    if fmt in ("mp3", "aac"):
+        async def generate():
+            for sentence in sentences:
+                try:
+                    result = await _synthesize(sentence)
+                    yield _encode_audio(result.audios[0], result.sample_rate, fmt, req.speed)
+                except Exception as exc:
+                    print(f"[server] chunk error: {exc}", flush=True)
+                    break
+        return StreamingResponse(generate(), media_type=CONTENT_TYPES[fmt])
 
-    return StreamingResponse(io.BytesIO(audio_bytes), media_type=CONTENT_TYPES[fmt])
+    # wav: one header + raw PCM per chunk
+    elif fmt == "wav":
+        async def generate_wav():
+            first = True
+            for sentence in sentences:
+                try:
+                    result = await _synthesize(sentence)
+                    if first:
+                        yield _wav_stream_header(result.sample_rate)
+                        first = False
+                    yield _audio_to_pcm(result.audios[0], req.speed)
+                except Exception as exc:
+                    print(f"[server] chunk error: {exc}", flush=True)
+                    break
+        return StreamingResponse(generate_wav(), media_type=CONTENT_TYPES["wav"])
+
+    # opus/flac: container format not suitable for chunk concatenation → buffer all
+    else:
+        tensors: list[torch.Tensor] = []
+        sample_rate = 0
+        for sentence in sentences:
+            try:
+                result = await _synthesize(sentence)
+                tensors.append(result.audios[0])
+                sample_rate = result.sample_rate
+            except Exception as exc:
+                return _error(500, str(exc))
+
+        if not tensors:
+            return _error(500, "No audio generated.")
+
+        normalized = [t.squeeze(0) if t.dim() > 1 else t for t in tensors]
+        audio = torch.cat(normalized, dim=0)
+        try:
+            audio_bytes = _encode_audio(audio, sample_rate, fmt, req.speed)
+        except Exception as exc:
+            return _error(500, f"Audio encoding failed: {exc}")
+        return StreamingResponse(io.BytesIO(audio_bytes), media_type=CONTENT_TYPES[fmt])
 
 
 # ---------------------------------------------------------------------------
