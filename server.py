@@ -33,6 +33,7 @@ HF_CHECKPOINT_VOICEDESIGN = os.environ.get(
     "HF_CHECKPOINT_VOICEDESIGN", "Aratako/Irodori-TTS-500M-v2-VoiceDesign"
 )
 HF_CHECKPOINT_BASE = os.environ.get("HF_CHECKPOINT_BASE", "Aratako/Irodori-TTS-500M-v2")
+HF_CHECKPOINT_V3 = os.environ.get("HF_CHECKPOINT_V3", "Aratako/Irodori-TTS-500M-v3")
 MODEL_DEVICE = os.environ.get("MODEL_DEVICE", "cuda")
 CODEC_DEVICE = os.environ.get("CODEC_DEVICE", "cuda")
 MODEL_PRECISION = os.environ.get("MODEL_PRECISION", "bf16")
@@ -50,9 +51,11 @@ CODEC_REPO = "Aratako/Semantic-DACVAE-Japanese-32dim"
 
 MODEL_VOICEDESIGN = "irodori-tts-500m-v2-voicedesign"
 MODEL_BASE = "irodori-tts-500m-v2"
+MODEL_V3 = "irodori-tts-500m-v3"
 MODEL_CHECKPOINTS: dict[str, str] = {
     MODEL_VOICEDESIGN: HF_CHECKPOINT_VOICEDESIGN,
     MODEL_BASE: HF_CHECKPOINT_BASE,
+    MODEL_V3: HF_CHECKPOINT_V3,
 }
 
 CONTENT_TYPES: dict[str, str] = {
@@ -86,7 +89,6 @@ def _build_runtime_key(model_id: str) -> RuntimeKey:
         model_precision=MODEL_PRECISION,
         codec_device=CODEC_DEVICE,
         codec_precision=CODEC_PRECISION,
-        enable_watermark=False,
         compile_model=False,
         compile_dynamic=False,
     )
@@ -298,6 +300,7 @@ def list_models():
     return {
         "object": "list",
         "data": [
+            {"id": MODEL_V3,          "object": "model", "created": 1700000000, "owned_by": "irodori"},
             {"id": MODEL_VOICEDESIGN, "object": "model", "created": 1700000000, "owned_by": "irodori"},
             {"id": MODEL_BASE,        "object": "model", "created": 1700000000, "owned_by": "irodori"},
         ],
@@ -348,12 +351,29 @@ async def create_speech(req: SpeechRequest):
         caption = None
         cfg_scale_caption = 0.0
         cfg_scale_speaker = CFG_SCALE_SPEAKER
+        # v2 has no duration predictor; estimate manually to avoid 30s fallback
+        use_manual_seconds = True
+    elif model_id == MODEL_V3:
+        # v3: reference audio is optional; missing voice falls back to no-ref mode
+        voice_file = _find_voice_file(req.voice)
+        if voice_file is not None:
+            ref_wav = str(voice_file)
+            no_ref = False
+        else:
+            ref_wav = None
+            no_ref = True
+        caption = None
+        cfg_scale_caption = 0.0
+        cfg_scale_speaker = CFG_SCALE_SPEAKER
+        # v3 has a built-in duration predictor; pass seconds=None to let it run
+        use_manual_seconds = False
     else:  # MODEL_VOICEDESIGN
         ref_wav = None
         no_ref = True
         caption = req.instructions.strip() if req.instructions else None
         cfg_scale_caption = CFG_SCALE_CAPTION
         cfg_scale_speaker = 0.0
+        use_manual_seconds = True
 
     # --- Acquire runtime (TTL cache, may trigger model load) ---
     try:
@@ -367,6 +387,7 @@ async def create_speech(req: SpeechRequest):
 
     async def _synthesize(sentence: str):
         loop = asyncio.get_running_loop()
+        seconds = _estimate_seconds(sentence) if use_manual_seconds else None
         return await loop.run_in_executor(
             None,
             lambda: runtime.synthesize(
@@ -380,7 +401,7 @@ async def create_speech(req: SpeechRequest):
                     ref_ensure_max=True,
                     num_candidates=1,
                     decode_mode="sequential",
-                    seconds=_estimate_seconds(sentence),
+                    seconds=seconds,
                     max_ref_seconds=30.0,
                     num_steps=NUM_STEPS,
                     cfg_guidance_mode="independent",

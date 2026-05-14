@@ -2,10 +2,11 @@
 
 ## 概要
 [Irodori-TTS](https://github.com/Aratako/Irodori-TTS)の[OpenAI Text-to-Speech API](https://developers.openai.com/api/docs/guides/text-to-speech)互換ラッパーです。
-以下の2モデルに対応しています。
+以下の3モデルに対応しています。
 
 | モデルID | HuggingFace | 特徴 |
 |---|---|---|
+| `irodori-tts-500m-v3` | [Aratako/Irodori-TTS-500M-v3](https://huggingface.co/Aratako/Irodori-TTS-500M-v3) | 最新版。リファレンス音声なしでも動作（no-refモード）。デュレーション予測器搭載 |
 | `irodori-tts-500m-v2-voicedesign` | [Aratako/Irodori-TTS-500M-v2-VoiceDesign](https://huggingface.co/Aratako/Irodori-TTS-500M-v2-VoiceDesign) | `instructions`（自然言語キャプション）で声質・感情を制御するVoice Designモデル |
 | `irodori-tts-500m-v2` | [Aratako/Irodori-TTS-500M-v2](https://huggingface.co/Aratako/Irodori-TTS-500M-v2) | リファレンス音声による話者クローンモデル |
 
@@ -56,7 +57,7 @@ Docker Hub からイメージを自動でpullして起動します。
 > docker compose -f compose.yml -f compose.dev.yml up --build
 > ```
 
-### 4. リファレンス音声の準備（`irodori-tts-500m-v2` を使用する場合）
+### 4. リファレンス音声の準備（`irodori-tts-500m-v2` / `irodori-tts-500m-v3` で話者クローンを使用する場合）
 
 話者クローン用のリファレンス音声を `voices/` ディレクトリに配置するか、API でアップロードします。
 
@@ -66,12 +67,15 @@ curl http://localhost:8880/v1/audio/voice_contents \
   -F "file=@my_voice.wav"
 ```
 
+> `irodori-tts-500m-v3` はリファレンス音声なしでも動作します（no-refモード）。リファレンス音声を登録しない場合、`voice` に任意の文字列を指定するとno-refモードで合成されます。
+
 ---
 
 ## 倫理的制限に関する注意
 
 本APIが利用を想定しているIrodori-TTS各モデルには、MITライセンスに加えて **倫理的制限（Ethical Restrictions）** が定められています。本APIを利用する際はモデルの利用規約を確認し、これに従ってください。
 
+- [Irodori-TTS-500M-v3 — Ethical Restrictions](https://huggingface.co/Aratako/Irodori-TTS-500M-v3#ethical-restrictions)
 - [Irodori-TTS-500M-v2-VoiceDesign — Ethical Restrictions](https://huggingface.co/Aratako/Irodori-TTS-500M-v2-VoiceDesign#ethical-restrictions)
 - [Irodori-TTS-500M-v2 — Ethical Restrictions](https://huggingface.co/Aratako/Irodori-TTS-500M-v2#ethical-restrictions)
 
@@ -92,6 +96,7 @@ curl http://localhost:8880/v1/audio/voice_contents \
 | コンポーネント | ライセンス |
 |---|---|
 | [Irodori-TTS](https://github.com/Aratako/Irodori-TTS) | MIT（+ 上記 Ethical Restrictions） |
+| [Irodori-TTS-500M-v3](https://huggingface.co/Aratako/Irodori-TTS-500M-v3) | MIT（+ 上記 Ethical Restrictions） |
 | [Irodori-TTS-500M-v2](https://huggingface.co/Aratako/Irodori-TTS-500M-v2) | MIT（+ 上記 Ethical Restrictions） |
 | [Irodori-TTS-500M-v2-VoiceDesign](https://huggingface.co/Aratako/Irodori-TTS-500M-v2-VoiceDesign) | MIT（+ 上記 Ethical Restrictions） |
 
@@ -113,6 +118,12 @@ curl http://localhost:8880/v1/audio/voice_contents \
 {
   "object": "list",
   "data": [
+    {
+      "id": "irodori-tts-500m-v3",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "irodori"
+    },
     {
       "id": "irodori-tts-500m-v2-voicedesign",
       "object": "model",
@@ -143,7 +154,7 @@ curl http://localhost:8880/v1/audio/voice_contents \
 |---|---|---|---|
 | `model` | string | ✓ | 使用するモデルID |
 | `input` | string | ✓ | 読み上げるテキスト |
-| `voice` | string | ✓ | `irodori-tts-500m-v2` では `/v1/audio/voice_contents` で登録したリファレンス音声のID。`irodori-tts-500m-v2-voicedesign` では OpenAI API 互換のために受け付けるが使用されない |
+| `voice` | string | ✓ | `irodori-tts-500m-v2` では `/v1/audio/voice_contents` で登録したリファレンス音声のID（必須）。`irodori-tts-500m-v3` では登録済みIDを指定すると話者クローン、未登録のIDを指定するとno-refモードで動作。`irodori-tts-500m-v2-voicedesign` では OpenAI API 互換のために受け付けるが使用されない |
 | `instructions` | string | | `irodori-tts-500m-v2-voicedesign` でのみ有効。声のスタイルを自然言語で指定するキャプション（Voice Design）。話者の性別・年齢・感情・話し方などを自由テキストで記述する |
 | `response_format` | string | | 出力フォーマット。`mp3` / `wav` / `opus` / `flac` / `aac`。デフォルト: `mp3` |
 | `speed` | number | | 再生速度（0.25〜4.0）。デフォルト: `1.0` |
@@ -170,6 +181,26 @@ curl http://localhost:8880/v1/audio/voice_contents \
 **curl 利用例**
 
 ```bash
+# irodori-tts-500m-v3: no-refモード（リファレンス音声なし）
+curl http://localhost:8880/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "irodori-tts-500m-v3",
+    "input": "こんにちは、今日もいい天気ですね。",
+    "voice": "alloy"
+  }' \
+  --output output.mp3
+
+# irodori-tts-500m-v3: リファレンス音声で話者をクローン
+curl http://localhost:8880/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "irodori-tts-500m-v3",
+    "input": "こんにちは、今日もいい天気ですね。",
+    "voice": "my_voice"
+  }' \
+  --output output.mp3
+
 # irodori-tts-500m-v2-voicedesign: instructions で声質を指定
 curl http://localhost:8880/v1/audio/speech \
   -H "Content-Type: application/json" \
@@ -204,7 +235,7 @@ curl http://localhost:8880/v1/audio/speech \
 
 ### /v1/audio/voice_contents — リファレンス音声の管理
 
-`irodori-tts-500m-v2` 使用時に `voice` パラメータで指定するリファレンス音声（話者クローン用）を管理するエンドポイント群です。
+`irodori-tts-500m-v2` および `irodori-tts-500m-v3` で `voice` パラメータに指定するリファレンス音声（話者クローン用）を管理するエンドポイント群です。
 
 アップロードされたファイルはサーバーの `/voices` ディレクトリに保存されます。
 
@@ -369,6 +400,7 @@ curl -X DELETE http://localhost:8880/v1/audio/voice_contents/my_voice
 
 | 環境変数 | デフォルト | 説明 |
 |---|---|---|
+| `HF_CHECKPOINT_V3` | `Aratako/Irodori-TTS-500M-v3` | v3 モデルの HuggingFace リポジトリ ID |
 | `HF_CHECKPOINT_VOICEDESIGN` | `Aratako/Irodori-TTS-500M-v2-VoiceDesign` | VoiceDesign モデルの HuggingFace リポジトリ ID |
 | `HF_CHECKPOINT_BASE` | `Aratako/Irodori-TTS-500M-v2` | ベース（話者クローン）モデルの HuggingFace リポジトリ ID |
 
@@ -388,8 +420,8 @@ curl -X DELETE http://localhost:8880/v1/audio/voice_contents/my_voice
 | `NUM_STEPS` | `40` | Diffusionステップ数。多いほど高品質だが推論が遅くなる |
 | `CFG_SCALE_TEXT` | `3.0` | テキスト誘導スケール（両モデル共通） |
 | `CFG_SCALE_CAPTION` | `4.0` | キャプション誘導スケール（`irodori-tts-500m-v2-voicedesign` のみ有効） |
-| `CFG_SCALE_SPEAKER` | `5.0` | スピーカー誘導スケール（`irodori-tts-500m-v2` のみ有効） |
-| `SECONDS_BUFFER_MULTIPLIER` | `1.5` | 文字数から推定した生成秒数に掛けるバッファ倍率。値を大きくすると音声が途切れにくくなるが推論が遅くなる |
+| `CFG_SCALE_SPEAKER` | `5.0` | スピーカー誘導スケール（`irodori-tts-500m-v2` / `irodori-tts-500m-v3` で有効） |
+| `SECONDS_BUFFER_MULTIPLIER` | `1.5` | 文字数から推定した生成秒数に掛けるバッファ倍率。`irodori-tts-500m-v2` / `irodori-tts-500m-v2-voicedesign` のみ適用。`irodori-tts-500m-v3` はデュレーション予測器が自動推定するため使用されない |
 
 #### モデルキャッシュ
 

@@ -5,6 +5,7 @@
 #   ./test.sh                         # 全テスト実行
 #   ./test.sh voicedesign             # VoiceDesign モデルのみ
 #   ./test.sh base                    # ベースモデル（話者クローン）のみ
+#   ./test.sh v3                      # v3 モデルのみ
 #   ./test.sh voice_contents          # voice_contents CRUD のみ
 #   ./test.sh models                  # /v1/models のみ
 #   ./test.sh streaming               # ストリーミングのみ
@@ -81,6 +82,7 @@ test_models() {
   body=$(cat /tmp/t_models.json)
 
   check_status 200 "$status" "GET /v1/models"
+  check_contains "$body" "irodori-tts-500m-v3" "models: v3 が含まれる"
   check_contains "$body" "irodori-tts-500m-v2-voicedesign" "models: voicedesign が含まれる"
   check_contains "$body" "irodori-tts-500m-v2\"" "models: base が含まれる"
 }
@@ -399,6 +401,179 @@ test_base() {
 }
 
 # ---------------------------------------------------------------------------
+# テスト: POST /v1/audio/speech — v3 モデル
+#
+# 聴き比べ用ファイル構成 (test_outputs/v3/):
+#   01_noref_text1.mp3            — no-ref モード（voice ファイルなし → フォールバック）
+#   02_noref_text2.mp3            — no-ref モード、別テキスト
+#   03_speed_0.75.mp3             — no-ref モード、speed=0.75
+#   04_speed_1.00.mp3             — no-ref モード、speed=1.00（基準）
+#   05_speed_1.50.mp3             — no-ref モード、speed=1.50
+#   06_withref_text1.mp3          — リファレンス音声あり、テキスト1
+#   07_withref_text2.mp3          — リファレンス音声あり、テキスト2
+#   08_withref_wav.wav            — リファレンス音声あり、wav フォーマット
+#   09_noref_mp3_multi.mp3        — no-ref 複数文、mp3 チャンクストリーミング
+#   10_noref_wav_multi.wav        — no-ref 複数文、wav ストリーミング
+# ---------------------------------------------------------------------------
+test_v3() {
+  section "POST /v1/audio/speech (irodori-tts-500m-v3)"
+
+  local v3_dir="${OUTPUT_DIR}/v3"
+  mkdir -p "$v3_dir"
+
+  local TEXT1="こんにちは。今日もいい天気ですね。どうぞよろしくお願いします。"
+  local TEXT2="本日はお越しいただきありがとうございます。またいつでもお気軽にご連絡ください。"
+  local TEXT_SPEED="本日はお越しいただきありがとうございます。どうぞよろしくお願いいたします。"
+  local TEXT_MULTI="こんにちは。今日もいい天気ですね。どうぞよろしくお願いします。本日はお越しいただきありがとうございます。またいつでもお気軽にご連絡ください。"
+
+  local status out headers
+
+  # --- no-ref モード (voice ファイルが存在しない → no_ref フォールバック) ---
+
+  # 01: テキスト1
+  out="${v3_dir}/01_noref_text1.mp3"
+  status=$(curl -s -o "$out" -w "%{http_code}" \
+    -X POST "${BASE_URL}/v1/audio/speech" \
+    -H "Content-Type: application/json" \
+    --max-time 600 \
+    -d "{\"model\":\"irodori-tts-500m-v3\",\"input\":\"${TEXT1}\",\"voice\":\"alloy\"}")
+  check_status 200 "$status" "v3: 01 no-ref テキスト1"
+  check_audio_file "$out" "v3: 01 ファイル生成"
+
+  # 02: テキスト2
+  out="${v3_dir}/02_noref_text2.mp3"
+  status=$(curl -s -o "$out" -w "%{http_code}" \
+    -X POST "${BASE_URL}/v1/audio/speech" \
+    -H "Content-Type: application/json" \
+    --max-time 600 \
+    -d "{\"model\":\"irodori-tts-500m-v3\",\"input\":\"${TEXT2}\",\"voice\":\"alloy\"}")
+  check_status 200 "$status" "v3: 02 no-ref テキスト2"
+  check_audio_file "$out" "v3: 02 ファイル生成"
+
+  # 03〜05: 同テキストで speed 聴き比べ
+  for speed_label in "03_speed_0.75:0.75" "04_speed_1.00:1.0" "05_speed_1.50:1.5"; do
+    local label="${speed_label%%:*}"
+    local speed="${speed_label##*:}"
+    out="${v3_dir}/${label}.mp3"
+    status=$(curl -s -o "$out" -w "%{http_code}" \
+      -X POST "${BASE_URL}/v1/audio/speech" \
+      -H "Content-Type: application/json" \
+      --max-time 600 \
+      -d "{\"model\":\"irodori-tts-500m-v3\",\"input\":\"${TEXT_SPEED}\",\"voice\":\"alloy\",\"speed\":${speed}}")
+    check_status 200 "$status" "v3: ${label} speed=${speed}"
+    check_audio_file "$out" "v3: ${label} ファイル生成"
+  done
+
+  echo "  → no-ref 出力: ${v3_dir}/"
+
+  # --- リファレンス音声あり (voicedesign で仮音声を生成してアップロード) ---
+  local ref_audio="${v3_dir}/ref_voice.mp3"
+  echo -e "\n  [INFO] v3 リファレンス音声あり用の音声を生成中..."
+  local ref_gen_status
+  ref_gen_status=$(curl -s -o "$ref_audio" -w "%{http_code}" \
+    -X POST "${BASE_URL}/v1/audio/speech" \
+    -H "Content-Type: application/json" \
+    --max-time 600 \
+    -d '{"model":"irodori-tts-500m-v2-voicedesign","input":"こんにちは。本日はよろしくお願いします。少しお時間をいただいてもよろしいでしょうか。","voice":"alloy","instructions":"落ち着いた若い女性が、丁寧な口調でゆっくりと話している。"}')
+
+  if [[ "$ref_gen_status" == "200" ]] && [[ -s "$ref_audio" ]]; then
+    pass "v3: リファレンス音声を生成"
+    local ref_voice_id="v3_ref_$$"
+    status=$(curl -s -o /tmp/t_v3_upload.json -w "%{http_code}" \
+      -X POST "${BASE_URL}/v1/audio/voice_contents" \
+      -F "file=@${ref_audio}" \
+      -F "voice_id=${ref_voice_id}")
+    check_status 201 "$status" "v3: リファレンス音声アップロード"
+
+    # 06: リファレンスあり テキスト1
+    out="${v3_dir}/06_withref_text1.mp3"
+    status=$(curl -s -o "$out" -w "%{http_code}" \
+      -X POST "${BASE_URL}/v1/audio/speech" \
+      -H "Content-Type: application/json" \
+      --max-time 600 \
+      -d "{\"model\":\"irodori-tts-500m-v3\",\"input\":\"${TEXT1}\",\"voice\":\"${ref_voice_id}\"}")
+    check_status 200 "$status" "v3: 06 リファレンスあり テキスト1"
+    check_audio_file "$out" "v3: 06 ファイル生成"
+
+    # 07: リファレンスあり テキスト2
+    out="${v3_dir}/07_withref_text2.mp3"
+    status=$(curl -s -o "$out" -w "%{http_code}" \
+      -X POST "${BASE_URL}/v1/audio/speech" \
+      -H "Content-Type: application/json" \
+      --max-time 600 \
+      -d "{\"model\":\"irodori-tts-500m-v3\",\"input\":\"${TEXT2}\",\"voice\":\"${ref_voice_id}\"}")
+    check_status 200 "$status" "v3: 07 リファレンスあり テキスト2"
+    check_audio_file "$out" "v3: 07 ファイル生成"
+
+    # 08: リファレンスあり wav フォーマット
+    out="${v3_dir}/08_withref_wav.wav"
+    status=$(curl -s -o "$out" -w "%{http_code}" \
+      -X POST "${BASE_URL}/v1/audio/speech" \
+      -H "Content-Type: application/json" \
+      --max-time 600 \
+      -d "{\"model\":\"irodori-tts-500m-v3\",\"input\":\"${TEXT1}\",\"voice\":\"${ref_voice_id}\",\"response_format\":\"wav\"}")
+    check_status 200 "$status" "v3: 08 リファレンスあり wav"
+    check_audio_file "$out" "v3: 08 ファイル生成"
+
+    curl -s -o /dev/null -X DELETE "${BASE_URL}/v1/audio/voice_contents/${ref_voice_id}"
+  else
+    fail "v3: リファレンス音声の生成に失敗 (HTTP ${ref_gen_status}) — リファレンスありテストをスキップ"
+  fi
+
+  # --- ストリーミング ---
+
+  # 09: no-ref mp3 複数文 chunked
+  out="${v3_dir}/09_noref_mp3_multi.mp3"
+  headers="/tmp/t_v3_mp3_headers.txt"
+  status=$(curl -s --no-buffer -D "$headers" -o "$out" -w "%{http_code}" \
+    -X POST "${BASE_URL}/v1/audio/speech" \
+    -H "Content-Type: application/json" \
+    --max-time 600 \
+    -d "{\"model\":\"irodori-tts-500m-v3\",\"input\":\"${TEXT_MULTI}\",\"voice\":\"alloy\"}")
+  check_status 200 "$status" "v3: 09 no-ref mp3 複数文ストリーミング"
+  check_audio_file "$out" "v3: 09 ファイル生成"
+  if grep -qi "transfer-encoding: chunked" "$headers"; then
+    pass "v3: 09 Transfer-Encoding: chunked"
+  else
+    fail "v3: 09 Transfer-Encoding: chunked が見つからない"
+  fi
+
+  # 10: no-ref wav 複数文 ストリーミング
+  out="${v3_dir}/10_noref_wav_multi.wav"
+  headers="/tmp/t_v3_wav_headers.txt"
+  status=$(curl -s --no-buffer -D "$headers" -o "$out" -w "%{http_code}" \
+    -X POST "${BASE_URL}/v1/audio/speech" \
+    -H "Content-Type: application/json" \
+    --max-time 600 \
+    -d "{\"model\":\"irodori-tts-500m-v3\",\"input\":\"${TEXT_MULTI}\",\"voice\":\"alloy\",\"response_format\":\"wav\"}")
+  check_status 200 "$status" "v3: 10 no-ref wav 複数文ストリーミング"
+  check_audio_file "$out" "v3: 10 ファイル生成"
+  if grep -qi "transfer-encoding: chunked" "$headers"; then
+    pass "v3: 10 Transfer-Encoding: chunked"
+  else
+    fail "v3: 10 Transfer-Encoding: chunked が見つからない"
+  fi
+
+  echo "  → 出力: ${v3_dir}/"
+
+  # --- 異常系 ---
+  local body
+  status=$(curl -s -o /tmp/t_v3_empty.json -w "%{http_code}" \
+    -X POST "${BASE_URL}/v1/audio/speech" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"irodori-tts-500m-v3","input":"","voice":"alloy"}')
+  body=$(cat /tmp/t_v3_empty.json)
+  check_status 400 "$status" "v3: input 空 → 400"
+  check_contains "$body" "input" "v3: input 空 エラー param"
+
+  status=$(curl -s -o /tmp/t_v3_speed.json -w "%{http_code}" \
+    -X POST "${BASE_URL}/v1/audio/speech" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"irodori-tts-500m-v3","input":"test","voice":"alloy","speed":10}')
+  check_status 400 "$status" "v3: speed 範囲外 → 400"
+}
+
+# ---------------------------------------------------------------------------
 # テスト: POST /v1/audio/speech — ストリーミング (Chunked Transfer Encoding)
 #
 # 出力ファイル構成 (test_outputs/streaming/):
@@ -544,11 +719,12 @@ case "$TARGET" in
   models)        test_models ;;
   voicedesign)   test_models; test_voicedesign ;;
   base)          test_models; test_base ;;
+  v3)            test_models; test_v3 ;;
   voice_contents) test_voice_contents ;;
   streaming)     test_streaming ;;
-  all)           test_models; test_voicedesign; test_voice_contents; test_base; test_streaming ;;
+  all)           test_models; test_voicedesign; test_voice_contents; test_base; test_v3; test_streaming ;;
   *)
-    echo "Usage: $0 [all|models|voicedesign|base|voice_contents|streaming]"
+    echo "Usage: $0 [all|models|voicedesign|base|v3|voice_contents|streaming]"
     exit 1
     ;;
 esac
