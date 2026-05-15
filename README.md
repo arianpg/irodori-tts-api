@@ -1,5 +1,13 @@
 # IrodoriTTS OpenAI API互換ラッパー
 
+## はじめに
+**[Irodori-TTS公式のOpenAI Text to Speech API互換サーバー](https://github.com/Aratako/Irodori-TTS-Server)がリリースされています。**
+**上記の利用を強く推奨いたします。**
+
+本プロジェクトは公式互換サーバーリリースにより役割を終えたため、新たな更新予定はございません。
+
+---
+
 ## 概要
 [Irodori-TTS](https://github.com/Aratako/Irodori-TTS)の[OpenAI Text-to-Speech API](https://developers.openai.com/api/docs/guides/text-to-speech)互換ラッパーです。
 以下の3モデルに対応しています。
